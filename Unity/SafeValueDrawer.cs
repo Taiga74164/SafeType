@@ -30,6 +30,7 @@ using UnityEngine;
 [CustomPropertyDrawer(typeof(SafeVector2))]
 [CustomPropertyDrawer(typeof(SafeVector3))]
 [CustomPropertyDrawer(typeof(SafeQuaternion))]
+[CustomPropertyDrawer(typeof(SafeBool))]
 public class SafeValueDrawer : PropertyDrawer
 {
     public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
