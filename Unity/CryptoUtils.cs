@@ -1,10 +1,15 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
 public static class CryptoUtils
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ulong RotateLeft(ulong x, int r) => x << r | x >> 64 - r;
+    // [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    // private static ulong RotateRight(ulong x, int r) => x >> r | x << 64 - r;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ulong Encrypt(ulong value, ulong key)
     {
         value ^= key;
@@ -13,6 +18,7 @@ public static class CryptoUtils
         return value;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ulong Decrypt(ulong value, ulong key)
     {
         value ^= RotateLeft(key, 7);

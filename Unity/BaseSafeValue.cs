@@ -37,12 +37,14 @@ public interface ISafeValue<T> where T : struct
 public abstract class BaseSafeValue<T> : ISafeValue<T>, ISerializationCallbackReceiver where T : struct
 {
     [SerializeField] protected T value;
-    [NonSerialized] protected bool Initialized;
-    [NonSerialized] protected SafeType<T> RuntimeValue;
+    [NonSerialized] private readonly object _lock = new object();
+    [NonSerialized] private volatile bool _initialized;
+    [NonSerialized] private SafeType<T> _runtimeValue;
 
     protected BaseSafeValue(T defaultValue = default)
     {
         value = defaultValue;
+        _initialized = false;
     }
 
     public T GetRaw()
@@ -54,46 +56,88 @@ public abstract class BaseSafeValue<T> : ISafeValue<T>, ISerializationCallbackRe
     public SafeType<T> Get()
     {
         DoInitialize();
-        return RuntimeValue;
+        return _runtimeValue;
     }
 
     public void Set(SafeType<T> newValue)
     {
-        RuntimeValue = newValue;
-        Initialized = true;
-        value = newValue;
+        lock (_lock)
+        {
+            _runtimeValue = newValue;
+            _initialized = true;
+            value = newValue;
+        }
     }
 
     public void Set(T newValue)
     {
-        RuntimeValue = new SafeType<T>(newValue);
-        Initialized = true;
-        value = newValue;
+        lock (_lock)
+        {
+            _runtimeValue = new SafeType<T>(newValue);
+            _initialized = true;
+            value = newValue;
+        }
     }
 
     public void OnAfterDeserialize()
     {
-        Initialized = false;
+        // Reset runtime value on deserialization
+        lock (_lock)
+        {
+            _initialized = false;
+        }
     }
 
-    public void OnBeforeSerialize() { }
+    public void OnBeforeSerialize()
+    {
+        // Ensure value is synchronized before serialization
+        if (_initialized)
+        {
+            value = _runtimeValue;
+        }
+    }
 
     private void DoInitialize()
     {
-        if (Initialized) return;
+        if (_initialized) return;
 
-        RuntimeValue = new SafeType<T>(value);
-        Initialized = true;
+        lock (_lock)
+        {
+            if (_initialized) return;
+
+            try
+            {
+                _runtimeValue = new SafeType<T>(value);
+                _initialized = true;
+            }
+            catch (Exception ex)
+            {
+#if UNITY_EDITOR
+                Debug.LogError($"Failed to initialize SafeValue<{typeof(T).Name}>: {ex.Message}");
+#endif
+                _runtimeValue = new SafeType<T>(default);
+                _initialized = true;
+            }
+        }
     }
 
     public override bool Equals(object obj)
     {
-        if (obj is BaseSafeValue<T> other) return value.Equals(other.value);
-        return false;
+        return obj switch
+        {
+            BaseSafeValue<T> other => value.Equals(other.value),
+            T directValue => value.Equals(directValue),
+            _ => false
+        };
+
     }
 
     protected bool Equals(BaseSafeValue<T> other)
-        => value.Equals(other.value) && Equals(RuntimeValue, other.RuntimeValue) && Initialized == other.Initialized;
+    {
+        if (other == null) return false;
+        return value.Equals(other.value) &&
+               _initialized == other._initialized;
+    }
 
     public override int GetHashCode() => value.GetHashCode();
 

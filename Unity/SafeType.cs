@@ -23,14 +23,15 @@
 // SOFTWARE.
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using UnityEngine;
 
-public class SafeType<T> where T : struct
+public readonly struct SafeType<T> where T : struct
 {
     private const ulong Magic = 0xB16B00B1E5;
+    private static readonly INumeric<T> Ops = NumericOperations<T>.Get();
 
-    private static readonly INumeric<T> Ops;
     private readonly ulong _checksum;
     private readonly ulong _encrypted;
     private readonly ulong _key;
@@ -38,20 +39,18 @@ public class SafeType<T> where T : struct
 
     static SafeType()
     {
-        if (typeof(T) == typeof(int))
-            Ops = (INumeric<T>)new IntOperations();
-        else if (typeof(T) == typeof(float))
-            Ops = (INumeric<T>)new FloatOperations();
-        else if (typeof(T) == typeof(double))
-            Ops = (INumeric<T>)new DoubleOperations();
-        else if (typeof(T) == typeof(Vector2))
-            Ops = (INumeric<T>)new Vector2Operations();
-        else if (typeof(T) == typeof(Vector3))
-            Ops = (INumeric<T>)new Vector3Operations();
-        else if (typeof(T) == typeof(Quaternion))
-            Ops = (INumeric<T>)new QuaternionOperations();
+        // Compile-time validation
+        if (!NumericOperations<T>.IsSupported())
+        {
+#if UNITY_EDITOR
+            throw new NotSupportedException($"SafeType<{typeof(T).Name}> is not supported");
+#else
+            throw new NotSupportedException();
+#endif
+        }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public SafeType(T value = default)
     {
         _magic = Magic;
@@ -61,104 +60,167 @@ public class SafeType<T> where T : struct
         _encrypted = CryptoUtils.Encrypt(raw, _key);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool Verify()
     {
-        if (_magic != Magic)
+        try
+        {
+            if (_magic != Magic)
+            {
 #if UNITY_EDITOR
-            throw new Exception("Memory tampering detected!");
-#else
-            return false;
+                Debug.LogError("Memory tampering detected: Invalid magic number!");
 #endif
+                return false;
+            }
 
-        var decrypted = CryptoUtils.Decrypt(_encrypted, _key);
-        if ((decrypted ^ _key) != _checksum)
+            var decrypted = CryptoUtils.Decrypt(_encrypted, _key);
+            if ((decrypted ^ _key) != _checksum)
+            {
 #if UNITY_EDITOR
-            throw new Exception("Memory tampering detected!");
-#else
-            return false;
+                Debug.LogError("Memory tampering detected: Checksum mismatch!");
 #endif
+                return false;
 
-        return true;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+#if UNITY_EDITOR
+            Debug.LogError($"Verification failed: {ex.Message}");
+#endif
+            return false;
+        }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ulong ConvertToUlong(T value)
     {
-        var bytes = new byte[8];
         var size = Marshal.SizeOf<T>();
         if (size > 8)
+        {
 #if UNITY_EDITOR
-            throw new ArgumentException("Type too large");
+            throw new ArgumentException($"Type {typeof(T).Name} is too large (size: {size})");
 #else
             return 0;
 #endif
+        }
 
-        var handle = GCHandle.Alloc(value, GCHandleType.Pinned);
+        var bytes = new byte[8];
+        GCHandle handle = default;
+
         try
         {
+            handle = GCHandle.Alloc(value, GCHandleType.Pinned);
             Marshal.Copy(handle.AddrOfPinnedObject(), bytes, 0, size);
+            return BitConverter.ToUInt64(bytes, 0);
+        }
+        catch (Exception ex)
+        {
+#if UNITY_EDITOR
+            Debug.LogError($"ConvertToUlong failed for {typeof(T).Name}: {ex.Message}");
+#endif
+            return 0;
         }
         finally
         {
-            handle.Free();
+            if (handle.IsAllocated)
+                handle.Free();
         }
-
-        return BitConverter.ToUInt64(bytes, 0);
     }
 
-    public static implicit operator T(SafeType<T> safe)
-    {
-        if (!safe.Verify()) return default;
-        var decrypted = CryptoUtils.Decrypt(safe._encrypted, safe._key);
-        return ConvertFromUlong(decrypted);
-    }
-
-    public static implicit operator SafeType<T>(T value) => new SafeType<T>(value);
-
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static T ConvertFromUlong(ulong value)
     {
         var bytes = BitConverter.GetBytes(value);
         var result = default(T);
-        var handle = GCHandle.Alloc(result, GCHandleType.Pinned);
+        GCHandle handle = default;
+
         try
         {
+            handle = GCHandle.Alloc(result, GCHandleType.Pinned);
             Marshal.Copy(bytes, 0, handle.AddrOfPinnedObject(), Marshal.SizeOf<T>());
             result = (T)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(T));
+            return result;
+        }
+        catch (Exception ex)
+        {
+#if UNITY_EDITOR
+            Debug.LogError($"ConvertFromUlong failed for {typeof(T).Name}: {ex.Message}");
+#endif
+            return default;
         }
         finally
         {
-            handle.Free();
+            if (handle.IsAllocated)
+                handle.Free();
         }
-
-        return result;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static implicit operator T(SafeType<T> safe)
+    {
+        if (!safe.Verify())
+        {
+#if UNITY_EDITOR
+            Debug.LogWarning($"SafeType<{typeof(T).Name}> verification failed, returning default value");
+#endif
+            return default;
+        }
+
+        var decrypted = CryptoUtils.Decrypt(safe._encrypted, safe._key);
+        return ConvertFromUlong(decrypted);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static implicit operator SafeType<T>(T value) => new SafeType<T>(value);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static SafeType<T> operator +(SafeType<T> a, SafeType<T> b)
-        => new SafeType<T>(Ops.Add((T)a, (T)b));
+        => new SafeType<T>(Ops.Add(a, b));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static SafeType<T> operator -(SafeType<T> a, SafeType<T> b)
-        => new SafeType<T>(Ops.Subtract((T)a, (T)b));
+        => new SafeType<T>(Ops.Subtract(a, b));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static SafeType<T> operator *(SafeType<T> a, SafeType<T> b)
-        => new SafeType<T>(Ops.Multiply((T)a, (T)b));
+        => new SafeType<T>(Ops.Multiply(a, b));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static SafeType<T> operator /(SafeType<T> a, SafeType<T> b)
-        => new SafeType<T>(Ops.Divide((T)a, (T)b));
+        => new SafeType<T>(Ops.Divide(a, b));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator <(SafeType<T> a, SafeType<T> b)
-        => Ops.LessThan((T)a, (T)b);
+        => Ops.LessThan(a, b);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator >(SafeType<T> a, SafeType<T> b)
-        => Ops.GreaterThan((T)a, (T)b);
+        => Ops.GreaterThan(a, b);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool operator <=(SafeType<T> a, SafeType<T> b)
+        => Ops.LessThan(a, b) || EqualityComparer<T>.Default.Equals(a, b);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool operator >=(SafeType<T> a, SafeType<T> b)
+        => Ops.GreaterThan(a, b) || EqualityComparer<T>.Default.Equals(a, b);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator ==(SafeType<T> a, SafeType<T> b)
-        => EqualityComparer<T>.Default.Equals((T)a, (T)b);
+        => EqualityComparer<T>.Default.Equals(a, b);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator !=(SafeType<T> a, SafeType<T> b)
-        => !EqualityComparer<T>.Default.Equals((T)a, (T)b);
+        => !EqualityComparer<T>.Default.Equals(a, b);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override bool Equals(object obj)
     {
         if (obj is SafeType<T> other) return this == other;
+        if (obj is T value) return EqualityComparer<T>.Default.Equals(this, value);
         return false;
     }
 
