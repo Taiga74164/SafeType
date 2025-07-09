@@ -64,11 +64,19 @@ public class SafeType<T> where T : struct
     private bool Verify()
     {
         if (_magic != Magic)
+#if UNITY_EDITOR
             throw new Exception("Memory tampering detected!");
+#else
+            return false;
+#endif
 
         var decrypted = CryptoUtils.Decrypt(_encrypted, _key);
         if ((decrypted ^ _key) != _checksum)
+#if UNITY_EDITOR
             throw new Exception("Memory tampering detected!");
+#else
+            return false;
+#endif
 
         return true;
     }
@@ -77,7 +85,12 @@ public class SafeType<T> where T : struct
     {
         var bytes = new byte[8];
         var size = Marshal.SizeOf<T>();
-        if (size > 8) throw new ArgumentException("Type too large");
+        if (size > 8)
+#if UNITY_EDITOR
+            throw new ArgumentException("Type too large");
+#else
+            return 0;
+#endif
 
         var handle = GCHandle.Alloc(value, GCHandleType.Pinned);
         try
