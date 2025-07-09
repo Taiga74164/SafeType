@@ -29,7 +29,6 @@ public interface ISafeValue<T> where T : struct
     T GetRaw();
     SafeType<T> Get();
     void Set(SafeType<T> value);
-    void Set(T value);
     // event Action<T> OnValueChanged;
 }
 
@@ -65,17 +64,7 @@ public abstract class BaseSafeValue<T> : ISafeValue<T>, ISerializationCallbackRe
         {
             _runtimeValue = newValue;
             _initialized = true;
-            value = newValue;
-        }
-    }
-
-    public void Set(T newValue)
-    {
-        lock (_lock)
-        {
-            _runtimeValue = new SafeType<T>(newValue);
-            _initialized = true;
-            value = newValue;
+            // value = newValue;
         }
     }
 
@@ -125,11 +114,10 @@ public abstract class BaseSafeValue<T> : ISafeValue<T>, ISerializationCallbackRe
     {
         return obj switch
         {
-            BaseSafeValue<T> other => value.Equals(other.value),
-            T directValue => value.Equals(directValue),
+            BaseSafeValue<T> other => GetRaw().Equals(other.GetRaw()),
+            T directValue => GetRaw().Equals(directValue),
             _ => false
         };
-
     }
 
     protected bool Equals(BaseSafeValue<T> other)
@@ -139,7 +127,7 @@ public abstract class BaseSafeValue<T> : ISafeValue<T>, ISerializationCallbackRe
                _initialized == other._initialized;
     }
 
-    public override int GetHashCode() => value.GetHashCode();
+    public override int GetHashCode() => GetRaw().GetHashCode();
 
     public override string ToString() => GetRaw().ToString();
 }
