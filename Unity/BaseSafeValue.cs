@@ -50,7 +50,7 @@ public abstract class BaseSafeValue<T> : ISafeValue<T>, ISerializationCallbackRe
     public T GetRaw()
     {
         DoInitialize();
-        return value;
+        return _runtimeValue;
     }
 
     public SafeType<T> Get()
