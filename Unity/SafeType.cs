@@ -37,9 +37,14 @@ public readonly struct SafeType<T> where T : struct
     private readonly ulong _key;
     private readonly ulong _magic;
 
+    // Doesn't look clean but I don't wanna increase memory usage for small types hehe
+    private readonly ulong[] _checksumArray;
+    private readonly ulong[] _encryptedArray;
+    private readonly ulong[] _keyArray;
+    private readonly bool _isLargeType;
+
     static SafeType()
     {
-        // Compile-time validation
         if (!NumericOperations<T>.IsSupported())
         {
 #if UNITY_EDITOR
@@ -54,10 +59,38 @@ public readonly struct SafeType<T> where T : struct
     public SafeType(T value = default)
     {
         _magic = Magic;
-        _key = CryptoUtils.GenerateKey();
-        var raw = ConvertToUlong(value);
-        _checksum = raw ^ _key;
-        _encrypted = CryptoUtils.Encrypt(raw, _key);
+        var size = Marshal.SizeOf<T>();
+
+        if (size <= 8)
+        {
+            _isLargeType = false;
+            _key = CryptoUtils.GenerateKey();
+            var raw = ConvertToUlong(value);
+            _checksum = raw ^ _key;
+            _encrypted = CryptoUtils.Encrypt(raw, _key);
+
+            _checksumArray = null;
+            _encryptedArray = null;
+            _keyArray = null;
+        }
+        else
+        {
+            _isLargeType = true;
+            var rawArray = ConvertToUlongArray(value);
+            _keyArray = CryptoUtils.GenerateKeyArray(rawArray.Length);
+
+            _checksumArray = new ulong[rawArray.Length];
+            for (var i = 0; i < rawArray.Length; i++)
+            {
+                _checksumArray[i] = rawArray[i] ^ _keyArray[i];
+            }
+
+            _encryptedArray = CryptoUtils.EncryptArray(rawArray, _keyArray);
+
+            _checksum = 0;
+            _encrypted = 0;
+            _key = 0;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -73,14 +106,34 @@ public readonly struct SafeType<T> where T : struct
                 return false;
             }
 
-            var decrypted = CryptoUtils.Decrypt(_encrypted, _key);
-            if ((decrypted ^ _key) != _checksum)
+            if (_isLargeType)
             {
-#if UNITY_EDITOR
-                Debug.LogError("Memory tampering detected: Checksum mismatch!");
-#endif
-                return false;
+                if (_encryptedArray == null || _keyArray == null || _checksumArray == null)
+                    return false;
 
+                var decrypted = CryptoUtils.DecryptArray(_encryptedArray, _keyArray);
+                for (var i = 0; i < decrypted.Length; i++)
+                {
+                    if ((decrypted[i] ^ _keyArray[i]) != _checksumArray[i])
+                    {
+#if UNITY_EDITOR
+                        Debug.LogError($"Memory tampering detected: Checksum mismatch at index {i}!");
+#endif
+                        return false;
+                    }
+                }
+            }
+            else
+            {
+                // Verify small type (original logic)
+                var decrypted = CryptoUtils.Decrypt(_encrypted, _key);
+                if ((decrypted ^ _key) != _checksum)
+                {
+#if UNITY_EDITOR
+                    Debug.LogError("Memory tampering detected: Checksum mismatch!");
+#endif
+                    return false;
+                }
             }
 
             return true;
@@ -101,9 +154,9 @@ public readonly struct SafeType<T> where T : struct
         if (size > 8)
         {
 #if UNITY_EDITOR
-            throw new ArgumentException($"Type {typeof(T).Name} is too large (size: {size})");
+            throw new ArgumentException($"Use ConvertToUlongArray for large types. Type {typeof(T).Name} is {size} bytes");
 #else
-            return 0;
+            throw new ArgumentException();
 #endif
         }
 
@@ -122,6 +175,42 @@ public readonly struct SafeType<T> where T : struct
             Debug.LogError($"ConvertToUlong failed for {typeof(T).Name}: {ex.Message}");
 #endif
             return 0;
+        }
+        finally
+        {
+            if (handle.IsAllocated)
+                handle.Free();
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong[] ConvertToUlongArray(T value)
+    {
+        var size = Marshal.SizeOf<T>();
+        // Round up to the nearest ulong
+        var ulongCount = (size + 7) / 8;
+        var bytes = new byte[ulongCount * 8];
+
+        GCHandle handle = default;
+        try
+        {
+            handle = GCHandle.Alloc(value, GCHandleType.Pinned);
+            Marshal.Copy(handle.AddrOfPinnedObject(), bytes, 0, size);
+
+            var result = new ulong[ulongCount];
+            for (var i = 0; i < ulongCount; i++)
+            {
+                result[i] = BitConverter.ToUInt64(bytes, i * 8);
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+#if UNITY_EDITOR
+            Debug.LogError($"ConvertToUlongArray failed for {typeof(T).Name}: {ex.Message}");
+#endif
+            return new ulong[ulongCount];
         }
         finally
         {
@@ -159,6 +248,42 @@ public readonly struct SafeType<T> where T : struct
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static T ConvertFromUlongArray(ulong[] values)
+    {
+        var size = Marshal.SizeOf<T>();
+        var bytes = new byte[values.Length * 8];
+
+        for (var i = 0; i < values.Length; i++)
+        {
+            var valueBytes = BitConverter.GetBytes(values[i]);
+            Array.Copy(valueBytes, 0, bytes, i * 8, 8);
+        }
+
+        var result = default(T);
+        GCHandle handle = default;
+
+        try
+        {
+            handle = GCHandle.Alloc(result, GCHandleType.Pinned);
+            Marshal.Copy(bytes, 0, handle.AddrOfPinnedObject(), size);
+            result = (T)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(T));
+            return result;
+        }
+        catch (Exception ex)
+        {
+#if UNITY_EDITOR
+            Debug.LogError($"ConvertFromUlongArray failed for {typeof(T).Name}: {ex.Message}");
+#endif
+            return default;
+        }
+        finally
+        {
+            if (handle.IsAllocated)
+                handle.Free();
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static implicit operator T(SafeType<T> safe)
     {
         if (!safe.Verify())
@@ -169,8 +294,16 @@ public readonly struct SafeType<T> where T : struct
             return default;
         }
 
-        var decrypted = CryptoUtils.Decrypt(safe._encrypted, safe._key);
-        return ConvertFromUlong(decrypted);
+        if (safe._isLargeType)
+        {
+            var decrypted = CryptoUtils.DecryptArray(safe._encryptedArray, safe._keyArray);
+            return ConvertFromUlongArray(decrypted);
+        }
+        else
+        {
+            var decrypted = CryptoUtils.Decrypt(safe._encrypted, safe._key);
+            return ConvertFromUlong(decrypted);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -219,9 +352,12 @@ public readonly struct SafeType<T> where T : struct
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override bool Equals(object obj)
     {
-        if (obj is SafeType<T> other) return this == other;
-        if (obj is T value) return EqualityComparer<T>.Default.Equals(this, value);
-        return false;
+        return obj switch
+        {
+            SafeType<T> other => this == other,
+            T value => EqualityComparer<T>.Default.Equals(this, value),
+            _ => false
+        };
     }
 
     public override int GetHashCode() => ((T)this).GetHashCode();

@@ -27,6 +27,30 @@ public static class CryptoUtils
         return value;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong[] EncryptArray(ulong[] values, ulong[] keys)
+    {
+        var result = new ulong[values.Length];
+        for (var i = 0; i < values.Length; i++)
+        {
+            result[i] = Encrypt(values[i], keys[i]);
+        }
+
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong[] DecryptArray(ulong[] values, ulong[] keys)
+    {
+        var result = new ulong[values.Length];
+        for (var i = 0; i < values.Length; i++)
+        {
+            result[i] = Decrypt(values[i], keys[i]);
+        }
+
+        return result;
+    }
+
     public static ulong GenerateKey()
     {
         var buffer = new byte[8];
@@ -36,5 +60,16 @@ public static class CryptoUtils
         }
 
         return BitConverter.ToUInt64(buffer, 0) ^ (ulong)DateTime.UtcNow.Ticks;
+    }
+
+    public static ulong[] GenerateKeyArray(int count)
+    {
+        var keys = new ulong[count];
+        for (var i = 0; i < count; i++)
+        {
+            keys[i] = GenerateKey();
+        }
+
+        return keys;
     }
 }
